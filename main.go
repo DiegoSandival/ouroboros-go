@@ -25,14 +25,28 @@ const (
 	LeerLibre    uint32 = 1 << 10
 	Migrada      uint32 = 1 << 11
 	// Bits 12..30 reservados
-	GhostFlag    uint32 = 1 << 31 // Fase del anillo
+	GhostFlag uint32 = 1 << 31 // Fase del anillo
 )
+
+// GenomaGenesis habilita capacidades base para una célula genesis/dios.
+// Incluye: LeerSelf, LeerAny, EscribirSelf, EscribirAny, BorrarSelf,
+// BorrarAny, Diferir y LeerLibre; el resto de genes quedan apagados.
+const GenomaGenesis uint32 = LeerSelf |
+	LeerAny |
+	EscribirSelf |
+	EscribirAny |
+	BorrarSelf |
+	BorrarAny |
+	Diferir |
+	LeerLibre
 
 const CelulaSize int64 = 64
 
 var (
-	ErrOutOfBounds = errors.New("index out of bounds")
-	ErrUnauthorized = errors.New("unauthorized access")
+	ErrOutOfBounds       = errors.New("index out of bounds")
+	ErrUnauthorized      = errors.New("unauthorized access")
+	ErrInvalidMaxRecords = errors.New("maxRecords must be greater than zero")
+	ErrInvalidDBSize     = errors.New("invalid database size")
 )
 
 // Celula representa la estructura base
@@ -106,6 +120,10 @@ func (db *OuroborosDB) Close() error {
 
 // OpenOuroborosDB inicializa y recupera el estado de la base de datos
 func OpenOuroborosDB(path string, maxRecords uint32) (*OuroborosDB, error) {
+	if maxRecords == 0 {
+		return nil, ErrInvalidMaxRecords
+	}
+
 	// Se abre para lectura y escritura concurrente en disco
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
@@ -117,8 +135,19 @@ func OpenOuroborosDB(path string, maxRecords uint32) (*OuroborosDB, error) {
 		maxRecords: maxRecords,
 	}
 
-	// Recuperar estado (asume que el archivo ya tiene el tamaño necesario)
-	info, _ := f.Stat()
+	// Recuperar estado y validar tamaño esperado
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+
+	expectedSize := int64(maxRecords) * CelulaSize
+	if info.Size() > 0 && info.Size() != expectedSize {
+		_ = f.Close()
+		return nil, ErrInvalidDBSize
+	}
+
 	if info.Size() >= CelulaSize {
 		cursor, nextPhase := db.recoverState()
 		db.cursor = cursor
@@ -128,8 +157,47 @@ func OpenOuroborosDB(path string, maxRecords uint32) (*OuroborosDB, error) {
 		db.cursor = 0
 		db.phase = true
 		// Pre-asignar espacio para SWMR seguro si es necesario
-		f.Truncate(int64(maxRecords) * CelulaSize)
+		if err := f.Truncate(expectedSize); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
 	}
+
+	return db, nil
+}
+
+// OpenExistingOuroborosDB abre una base ya creada, infiriendo maxRecords desde el tamaño del archivo.
+func OpenExistingOuroborosDB(path string) (*OuroborosDB, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0644)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+
+	if info.Size() < CelulaSize || info.Size()%CelulaSize != 0 {
+		_ = f.Close()
+		return nil, ErrInvalidDBSize
+	}
+
+	maxRecords := uint32(info.Size() / CelulaSize)
+	if maxRecords == 0 {
+		_ = f.Close()
+		return nil, ErrInvalidDBSize
+	}
+
+	db := &OuroborosDB{
+		file:       f,
+		maxRecords: maxRecords,
+	}
+
+	cursor, nextPhase := db.recoverState()
+	db.cursor = cursor
+	db.phase = nextPhase
 
 	return db, nil
 }
@@ -171,11 +239,11 @@ func (db *OuroborosDB) readRaw(index uint32) Celula {
 
 // ---------- APPEND (Writer) ----------
 func (db *OuroborosDB) Append(c Celula) (uint32, error) {
-	db.mu.Lock()         // SWMR: Exclusividad para escribir
+	db.mu.Lock() // SWMR: Exclusividad para escribir
 	defer db.mu.Unlock()
 
 	genomaAjustado := setGhost(c.Genoma, db.phase)
-	
+
 	// Clonamos y ajustamos
 	nuevaCel := c
 	nuevaCel.Genoma = genomaAjustado
@@ -202,7 +270,7 @@ func (db *OuroborosDB) Read(index uint32) (Celula, error) {
 		return Celula{}, ErrOutOfBounds
 	}
 
-	db.mu.RLock()         // SWMR: Múltiples lecturas simultáneas permitidas
+	db.mu.RLock() // SWMR: Múltiples lecturas simultáneas permitidas
 	defer db.mu.RUnlock()
 
 	return db.readRaw(index), nil
@@ -227,7 +295,7 @@ func (db *OuroborosDB) ReadAuth(index uint32, secret []byte) (Celula, error) {
 
 // ---------- UPDATE (Writer) ----------
 func (db *OuroborosDB) Update(index uint32, nuevoGenoma, x, y, z uint32) error {
-	db.mu.Lock()          // SWMR: Exclusividad para escribir
+	db.mu.Lock() // SWMR: Exclusividad para escribir
 	defer db.mu.Unlock()
 
 	if index >= db.maxRecords {

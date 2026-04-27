@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+
 	//"os"
 	"crypto/rand"
 
@@ -27,7 +28,7 @@ func main() {
 	cell := ouroboros.Celula{
 		Hash:   hash,
 		Salt:   salt,
-		Genoma: ouroboros.LeerSelf | ouroboros.EscribirSelf,
+		Genoma: ouroboros.ReadOwn | ouroboros.WriteOwn,
 		X:      10,
 		Y:      234,
 		Z:      4234,

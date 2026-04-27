@@ -10,28 +10,51 @@ import (
 	"lukechampine.com/blake3"
 )
 
-// Banderas del Genoma
 const (
-	LeerSelf     uint32 = 1 << 0
-	LeerAny      uint32 = 1 << 1
-	EscribirSelf uint32 = 1 << 2
-	EscribirAny  uint32 = 1 << 3
-	BorrarSelf   uint32 = 1 << 4
-	BorrarAny    uint32 = 1 << 5
-	Diferir      uint32 = 1 << 6
-	Fucionar     uint32 = 1 << 7
-	Clonar       uint32 = 1 << 8
-	Dominante    uint32 = 1 << 9
-	LeerLibre    uint32 = 1 << 10
-	Migrada      uint32 = 1 << 11
-	// Bits 12..30 reservados
-	GhostFlag    uint32 = 1 << 31 // Fase del anillo
+	// Access Permissions (Bits 0-5)
+	ReadOwn   uint32 = 1 << iota // 1
+	ReadAll                      // 2
+	WriteOwn                     // 4
+	WriteAll                     // 8
+	DeleteOwn                    // 16
+	DeleteAll                    // 32
+
+	// Action Flags (Bits 6-8)
+	Defer
+	Merge
+	// Special Attributes (Bits 9-11)
+	IsSuper
+	PublicRead
+	IsMigrated
+	G11
+	G12
+	G13
+	G14
+	G15
+	G16
+	G17
+	G18
+	G19
+	G20
+	G21
+	G22
+	G23
+	G24
+	G25
+	G26
+	G27
+	G28
+	G29
+	G30
+
+	// System Flags (Bit 31)
+	RingPhase uint32 = 1 << 31 // Antes 'GhostFlag'
 )
 
 const CelulaSize int64 = 64
 
 var (
-	ErrOutOfBounds = errors.New("index out of bounds")
+	ErrOutOfBounds  = errors.New("index out of bounds")
 	ErrUnauthorized = errors.New("unauthorized access")
 )
 
@@ -71,14 +94,14 @@ func fromBytes(b []byte) Celula {
 
 // Funciones auxiliares de Genoma
 func getGhost(genoma uint32) bool {
-	return (genoma & GhostFlag) != 0
+	return (genoma & RingPhase) != 0
 }
 
 func setGhost(genoma uint32, phase bool) uint32 {
 	if phase {
-		return genoma | GhostFlag
+		return genoma | RingPhase
 	}
-	return genoma & (^GhostFlag)
+	return genoma & (^RingPhase)
 }
 
 // OuroborosDB es el manejador del anillo
@@ -171,11 +194,11 @@ func (db *OuroborosDB) readRaw(index uint32) Celula {
 
 // ---------- APPEND (Writer) ----------
 func (db *OuroborosDB) Append(c Celula) (uint32, error) {
-	db.mu.Lock()         // SWMR: Exclusividad para escribir
+	db.mu.Lock() // SWMR: Exclusividad para escribir
 	defer db.mu.Unlock()
 
 	genomaAjustado := setGhost(c.Genoma, db.phase)
-	
+
 	// Clonamos y ajustamos
 	nuevaCel := c
 	nuevaCel.Genoma = genomaAjustado
@@ -202,7 +225,7 @@ func (db *OuroborosDB) Read(index uint32) (Celula, error) {
 		return Celula{}, ErrOutOfBounds
 	}
 
-	db.mu.RLock()         // SWMR: Múltiples lecturas simultáneas permitidas
+	db.mu.RLock() // SWMR: Múltiples lecturas simultáneas permitidas
 	defer db.mu.RUnlock()
 
 	return db.readRaw(index), nil
@@ -227,7 +250,7 @@ func (db *OuroborosDB) ReadAuth(index uint32, secret []byte) (Celula, error) {
 
 // ---------- UPDATE (Writer) ----------
 func (db *OuroborosDB) Update(index uint32, nuevoGenoma, x, y, z uint32) error {
-	db.mu.Lock()          // SWMR: Exclusividad para escribir
+	db.mu.Lock() // SWMR: Exclusividad para escribir
 	defer db.mu.Unlock()
 
 	if index >= db.maxRecords {

@@ -54,8 +54,10 @@ const (
 const CelulaSize int64 = 64
 
 var (
-	ErrOutOfBounds  = errors.New("index out of bounds")
-	ErrUnauthorized = errors.New("unauthorized access")
+	ErrOutOfBounds   = errors.New("index out of bounds")
+	ErrUnauthorized  = errors.New("unauthorized access")
+	ErrInvalidConfig = errors.New("invalid database configuration")
+	ErrInvalidDBFile = errors.New("invalid database file")
 )
 
 // Celula representa la estructura base
@@ -129,6 +131,10 @@ func (db *OuroborosDB) Close() error {
 
 // OpenOuroborosDB inicializa y recupera el estado de la base de datos
 func OpenOuroborosDB(path string, maxRecords uint32) (*OuroborosDB, error) {
+	if maxRecords == 0 {
+		return nil, ErrInvalidConfig
+	}
+
 	// Se abre para lectura y escritura concurrente en disco
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
@@ -140,8 +146,26 @@ func OpenOuroborosDB(path string, maxRecords uint32) (*OuroborosDB, error) {
 		maxRecords: maxRecords,
 	}
 
-	// Recuperar estado (asume que el archivo ya tiene el tamaño necesario)
-	info, _ := f.Stat()
+	wantedSize := int64(maxRecords) * CelulaSize
+
+	// Recuperar estado (asegura tamaño para leer hasta maxRecords-1)
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if info.Size() > 0 && info.Size()%CelulaSize != 0 {
+		_ = f.Close()
+		return nil, ErrInvalidDBFile
+	}
+
+	if info.Size() < wantedSize {
+		if err := f.Truncate(wantedSize); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+	}
+
 	if info.Size() >= CelulaSize {
 		cursor, nextPhase := db.recoverState()
 		db.cursor = cursor
@@ -150,9 +174,45 @@ func OpenOuroborosDB(path string, maxRecords uint32) (*OuroborosDB, error) {
 		// Archivo nuevo
 		db.cursor = 0
 		db.phase = true
-		// Pre-asignar espacio para SWMR seguro si es necesario
-		f.Truncate(int64(maxRecords) * CelulaSize)
 	}
+
+	return db, nil
+}
+
+// OpenExistingOuroborosDB abre una base existente y deriva maxRecords desde el tamaño del archivo.
+// Falla si el archivo no existe o si su tamaño no es múltiplo del tamaño de celda.
+func OpenExistingOuroborosDB(path string) (*OuroborosDB, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0644)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+
+	size := info.Size()
+	if size < CelulaSize || size%CelulaSize != 0 {
+		_ = f.Close()
+		return nil, ErrInvalidDBFile
+	}
+
+	maxRecords64 := size / CelulaSize
+	if maxRecords64 <= 0 || maxRecords64 > int64(^uint32(0)) {
+		_ = f.Close()
+		return nil, ErrInvalidDBFile
+	}
+
+	db := &OuroborosDB{
+		file:       f,
+		maxRecords: uint32(maxRecords64),
+	}
+
+	cursor, nextPhase := db.recoverState()
+	db.cursor = cursor
+	db.phase = nextPhase
 
 	return db, nil
 }

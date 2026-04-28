@@ -25,7 +25,7 @@ const (
 	// Special Attributes (Bits 9-11)
 	IsSuper
 	PublicRead
-	IsMigrated
+	G10
 	G11
 	G12
 	G13
@@ -45,7 +45,7 @@ const (
 	G27
 	G28
 	G29
-	G30
+	IsMigrated
 
 	// System Flags (Bit 31)
 	RingPhase uint32 = 1 << 31 // Antes 'GhostFlag'
